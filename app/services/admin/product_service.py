@@ -165,6 +165,10 @@ class ProductService:
         """
         product = await self.get_product(product_id)
         product.status = new_status.value
+        if new_status == ProductStatus.PUBLISHED:
+            product.has_simulafly_listing = True
+        elif new_status == ProductStatus.ARCHIVED:
+            product.has_simulafly_listing = False
         await self.db.commit()
         await self.db.refresh(product)
         return product

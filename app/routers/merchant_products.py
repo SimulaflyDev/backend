@@ -274,8 +274,7 @@ async def publish_product(
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="product not found")
 
-
-    # Phase 3: enforce wallet balance ≥ threshold before publishing
+    # Phase 3: enforce wallet balance >= threshold before publishing
     from app.models.wallet import Wallet
     res = await db.execute(select(Wallet).where(Wallet.merchant_id == ctx.merchant.id))
     wallet = res.scalar_one_or_none()
@@ -286,6 +285,7 @@ async def publish_product(
         )
 
     product.status = "published"
+    product.has_simulafly_listing = True
     await db.commit()
 
     # Re-fetch for serialization
@@ -314,9 +314,6 @@ async def _product_owned(
     if not p or p.merchant_id != merchant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="product not found")
     return p
-
-
-
 
 
 # ─────────────────────────── Variants ────────────────────────────────────────
