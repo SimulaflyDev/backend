@@ -63,7 +63,7 @@ echo -e "\n${PROGRESS} ${CYAN}Step 2: Preparing application directory in ${APP_D
 mkdir -p "$APP_DIR"
 chown -R "$RUNNING_USER:$RUNNING_GROUP" "$APP_DIR"
 
-REPO_URL="https://github.com/shourya-cmyk/Backendsimulafly"
+REPO_URL="https://github.com/SimulaflyDev/backend"
 
 # Detect if the current directory is a local checkout of the application
 if [ -f "./requirements.txt" ] && [ -d "./app" ]; then
