@@ -168,36 +168,14 @@ async def submit_lead(
         merchant_snapshot=OrderMerchantOut.model_validate(product.merchant).model_dump(mode="json"),
     )
     db.add(order)
-    await db.commit()
+    await db.flush()
     await db.refresh(lead)
     await db.refresh(order)
 
-    # Notify merchant members about the new lead
-    try:
-        from app.models.merchant import MerchantMember
-        from app.models.notification import Notification
-
-        members_res = await db.execute(
-            select(MerchantMember).where(MerchantMember.merchant_id == product.merchant_id)
-        )
-        merchant_members = members_res.scalars().all()
-
-        for member in merchant_members:
-            notif = Notification(
-                user_id=member.user_id,
-                kind="system",
-                title="New Lead Received",
-                summary=f"A new direct purchase lead has been received for product: {product.title}",
-                payload={"lead_id": str(lead.id), "merchant_id": str(product.merchant_id)}
-            )
-            db.add(notif)
-        await db.commit()
-    except Exception as e:
-        import logging
-        logger = logging.getLogger("app.routers.buyer_leads")
-        logger.warning(f"Failed to create merchant notifications: {e}")
-
-    return BuyerLeadOut(
+    # Validate and snapshot the response before committing the purchase. A later
+    # notification rollback expires ORM objects, so never build the response
+    # from those objects after the best-effort notification transaction.
+    response = BuyerLeadOut(
         merchant=OrderMerchantOut.model_validate(order.merchant_snapshot),
         id=lead.id,
         merchant_id=lead.merchant_id,
@@ -224,6 +202,37 @@ async def submit_lead(
         ),
         order=OrderOut.model_validate(order),
     )
+    merchant_id = product.merchant_id
+    product_title = product.title
+    await db.commit()
+
+    # Notifications must not turn an already-persisted order into a checkout
+    # error (which encourages the customer to place the same order again).
+    try:
+        from app.models.merchant import MerchantMember
+        from app.models.notification import Notification
+
+        members_res = await db.execute(
+            select(MerchantMember).where(MerchantMember.merchant_id == merchant_id)
+        )
+        for member in members_res.scalars():
+            db.add(Notification(
+                user_id=member.user_id,
+                kind="system",
+                title="New Lead Received",
+                summary=f"A new direct purchase lead has been received for product: {product_title}",
+                payload={"lead_id": str(response.id), "merchant_id": str(merchant_id)},
+            ))
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to create merchant notifications for lead %s", response.id,
+            exc_info=True,
+        )
+
+    return response
 
 
 @router.get("/me", response_model=PaginatedLeads)
