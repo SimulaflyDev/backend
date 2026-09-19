@@ -1,5 +1,9 @@
 from collections.abc import AsyncIterator
+from pathlib import Path
 
+from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -60,5 +64,27 @@ async def ping_db() -> bool:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
         return True
+    except Exception:
+        return False
+
+
+def _expected_migration_heads() -> set[str]:
+    root = Path(__file__).resolve().parents[2]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "alembic"))
+    return set(ScriptDirectory.from_config(config).get_heads())
+
+
+async def schema_is_current() -> bool:
+    """Return false when the database revision is missing or behind the code."""
+    try:
+        expected = _expected_migration_heads()
+        async with engine.connect() as connection:
+            current = await connection.run_sync(
+                lambda sync_connection: set(
+                    MigrationContext.configure(sync_connection).get_current_heads()
+                )
+            )
+        return bool(expected) and current == expected
     except Exception:
         return False

@@ -243,21 +243,21 @@ systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
 echo -e "${SUCCESS} ${GREEN}Systemd service '$SERVICE_NAME' created and enabled.${NC}"
 
-# Step 8: Run Alembic Database Migrations (Graceful check)
+# Step 8: Run Alembic Database Migrations (required before starting code)
 echo -e "\n${PROGRESS} ${CYAN}Step 8: Running database migrations...${NC}"
 DB_URL=$(grep -E "^DATABASE_URL=" "$ENV_FILE" | cut -d'=' -f2- || true)
 
 if [[ -z "$DB_URL" || "$DB_URL" == *"localhost"* || "$DB_URL" == *"change-me"* ]]; then
-    echo -e "${WARNING} ${YELLOW}Database is unconfigured or set to localhost in .env file.${NC}"
-    echo -e "${INFO} Skipping database migrations. You can execute them manually later using:"
-    echo -e "      ${CYAN}cd $APP_DIR && venv/bin/alembic upgrade head${NC}"
+    echo -e "${ERROR} ${RED}Production database is not configured; refusing to start code against an unknown schema.${NC}"
+    exit 1
 else
     echo -e "${INFO} DATABASE_URL detected, running migrations..."
     if sudo -u "$RUNNING_USER" ENV=production "$APP_DIR/venv/bin/alembic" upgrade head; then
         echo -e "${SUCCESS} ${GREEN}Database schema updated to the latest revision successfully!${NC}"
     else
-        echo -e "${WARNING} ${RED}Database migration command failed.${NC}"
+        echo -e "${ERROR} ${RED}Database migration failed; the service was not restarted with incompatible code.${NC}"
         echo -e "${INFO} Verify your DATABASE_URL in $ENV_FILE, open firewall ports to your Azure Postgres/Neon instance if needed, and run migrations manually."
+        exit 1
     fi
 fi
 

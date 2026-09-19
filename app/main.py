@@ -10,7 +10,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.config import get_settings
-from app.core.database import SessionLocal, engine, ping_db
+from app.core.database import SessionLocal, engine, ping_db, schema_is_current
 from app.core.logging import configure_logging, get_logger
 from app.core.rate_limit import limiter
 from app.routers.admin import router as admin_router
@@ -50,6 +50,13 @@ log = get_logger("app.main")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("startup", env=settings.ENV, ai_configured=settings.ai_configured)
+
+    # Do not serve production traffic with ORM models newer than the database.
+    # The deployment normally migrates first; this catches manual starts or a
+    # misconfigured process manager before they become endpoint-specific 500s.
+    if settings.is_production and not await schema_is_current():
+        log.error("startup_blocked_database_schema_outdated")
+        raise RuntimeError("Database migrations are not at the application head")
 
     # First-run bootstrap of the editorial style catalog. No-op if the table
     # already has rows. Failures here are logged but don't block startup —
@@ -223,9 +230,15 @@ def create_app() -> FastAPI:
     @app.get("/readyz", tags=["health"])
     async def readyz():
         db_ok = await ping_db()
+        schema_ok = await schema_is_current() if db_ok else False
+        ready = db_ok and schema_ok
         return JSONResponse(
-            {"status": "ok" if db_ok else "degraded", "db": db_ok},
-            status_code=200 if db_ok else 503,
+            {
+                "status": "ok" if ready else "degraded",
+                "db": db_ok,
+                "schema": schema_ok,
+            },
+            status_code=200 if ready else 503,
         )
 
     return app
