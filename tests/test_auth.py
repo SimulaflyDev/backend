@@ -99,7 +99,7 @@ async def test_update_me_settings(auth_client, test_user):
     # Initial states
     assert test_user.push_notifications is True
     assert test_user.marketing_consent is True
-    assert test_user.model_improvement_consent is False
+    assert test_user.model_improvement_consent is True
     assert test_user.buyer_signal_sharing is True
 
     # Update preferences
@@ -108,7 +108,7 @@ async def test_update_me_settings(auth_client, test_user):
         json={
             "push_notifications": False,
             "marketing_consent": False,
-            "model_improvement_consent": True,
+            "model_improvement_consent": False,
             "buyer_signal_sharing": False,
         },
     )
@@ -116,7 +116,7 @@ async def test_update_me_settings(auth_client, test_user):
     body = r.json()
     assert body["push_notifications"] is False
     assert body["marketing_consent"] is False
-    assert body["model_improvement_consent"] is True
+    assert body["model_improvement_consent"] is False
     assert body["buyer_signal_sharing"] is False
 
 

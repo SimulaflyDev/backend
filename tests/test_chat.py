@@ -113,6 +113,11 @@ async def test_chat_turn_returns_carousel_when_sofa_in_catalog(
         category="Sofa",
         in_app_price=14999,
         status="published",
+        primary_image_url="https://images.example/sofa-front.jpg",
+        additional_images=[
+            "https://images.example/sofa-side.jpg",
+            "https://images.example/sofa-back.jpg",
+        ],
     )
     db_session.add(product)
     await db_session.commit()
@@ -129,6 +134,14 @@ async def test_chat_turn_returns_carousel_when_sofa_in_catalog(
     assert body["content"].startswith("Great, here are some options")
     assert body["ui_payload"]["type"] == "product_carousel"
     assert any(p["sku"] == "C1" for p in body["ui_payload"]["products"])
+    card = next(p for p in body["ui_payload"]["products"] if p["sku"] == "C1")
+    assert card["primary_image_url"] == product.primary_image_url
+    assert card["additional_images"] == product.additional_images
+    # Persisted chat messages must retain the same gallery for later sessions.
+    history = await auth_client.get(f"/api/v1/chat/{sid}/messages")
+    assert history.status_code == 200
+    saved_card = history.json()[-1]["ui_payload"]["products"][0]
+    assert saved_card["additional_images"] == product.additional_images
 
 
 @pytest.mark.asyncio

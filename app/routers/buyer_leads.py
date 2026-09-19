@@ -13,12 +13,14 @@ from sqlalchemy.orm import selectinload
 
 from app.models.event import BuyerEvent
 from app.models.lead import BuyerLead, LeadStatus, LeadType, Order, OrderStatus
-from app.models.merchant_product import MerchantProduct
+from app.models.merchant_product import MerchantProduct, MerchantProductVariant
+from app.models.merchant import Merchant
 from app.schemas.lead import (
     BuyerLeadCreate,
     BuyerLeadOut,
     CustomerInfo,
     OrderOut,
+    OrderMerchantOut,
     PaginatedLeads,
 )
 from app.services.coupons import check_coupon
@@ -56,23 +58,41 @@ async def submit_lead(
 
     # Build items list
     if body.items:
-        items_payload = [
-            {
-                "product_id": str(i.product_id),
-                "variant_id": str(i.variant_id) if i.variant_id else None,
-                "qty": i.qty,
-                "price_at_capture": float(i.price_at_capture),
-                "title": i.title,
-                "img_url": i.img_url,
-                "sku": i.sku,
-            }
-            for i in body.items
-        ]
-        subtotal = sum(
-            Decimal(str(i.price_at_capture)) * i.qty for i in body.items
-        )
+        products = (await db.execute(select(MerchantProduct).where(
+            MerchantProduct.id.in_([i.product_id for i in body.items]),
+        ))).scalars().all()
+        by_id = {p.id: p for p in products}
+        if product.id not in {i.product_id for i in body.items}:
+            raise HTTPException(422, "Main product must be included in the order")
+        items_payload = []
+        subtotal = Decimal("0")
+        for item in body.items:
+            p = by_id.get(item.product_id)
+            if not p or p.status != "published" or p.merchant_id != product.merchant_id:
+                raise HTTPException(422, "All order items must be available from the same shop")
+            if p.in_app_price is None:
+                raise HTTPException(422, "Product price is unavailable")
+            price = Decimal(str(p.in_app_price))
+            variant = None
+            if item.variant_id:
+                variant = await db.get(MerchantProductVariant, item.variant_id)
+                if not variant or variant.merchant_product_id != p.id:
+                    raise HTTPException(422, "Invalid product variant")
+                price += Decimal(str(variant.price_modifier))
+            if price < 0:
+                raise HTTPException(422, "Invalid product price")
+            items_payload.append({
+                "product_id": str(p.id), "variant_id": str(item.variant_id) if variant else None,
+                "qty": item.qty, "price_at_capture": float(price),
+                "title": f"{p.title} — {variant.label}" if variant else p.title,
+                "img_url": (variant.primary_image_url if variant else None) or p.primary_image_url,
+                "sku": f"{p.sku}-{variant.sku_suffix}" if variant else p.sku,
+            })
+            subtotal += price * item.qty
     else:
         # Fallback: single unit of the main product
+        if product.in_app_price is None or product.in_app_price < 0:
+            raise HTTPException(422, "Product price is unavailable")
         items_payload = [
             {
                 "product_id": str(product.id),
@@ -115,7 +135,7 @@ async def submit_lead(
         user_id=user.id,
         lead_type=LeadType.DIRECT_PURCHASE.value,
         status=LeadStatus.NEW.value,
-        product_ids=[str(product.id)],
+        product_ids=list(dict.fromkeys(i["product_id"] for i in items_payload)),
         ai_interactions_count=ai_count,
         estimated_value=total,
         # Fall back to user's saved profile if not provided at checkout time
@@ -145,6 +165,7 @@ async def submit_lead(
             "latitude": body.delivery_latitude,
             "longitude": body.delivery_longitude,
         },
+        merchant_snapshot=OrderMerchantOut.model_validate(product.merchant).model_dump(mode="json"),
     )
     db.add(order)
     await db.commit()
@@ -177,6 +198,7 @@ async def submit_lead(
         logger.warning(f"Failed to create merchant notifications: {e}")
 
     return BuyerLeadOut(
+        merchant=OrderMerchantOut.model_validate(order.merchant_snapshot),
         id=lead.id,
         merchant_id=lead.merchant_id,
         lead_type=lead.lead_type,
@@ -200,21 +222,7 @@ async def submit_lead(
             latitude=body.delivery_latitude,
             longitude=body.delivery_longitude,
         ),
-        order=OrderOut(
-            id=order.id,
-            status=order.status,
-            items=order.items,
-            subtotal_estimated=order.subtotal_estimated,
-            total_estimated=order.total_estimated,
-            coupon_code=order.coupon_code,
-            discount_amount=order.discount_amount,
-            accepted_at=None,
-            fee_charged_at=None,
-            platform_fee_amount=order.platform_fee_amount,
-            completed_at=None,
-            created_at=order.created_at,
-            updated_at=order.updated_at,
-        ),
+        order=OrderOut.model_validate(order),
     )
 
 
@@ -222,7 +230,7 @@ async def submit_lead(
 async def my_leads(
     user: CurrentUser,
     db: DBSession,
-    limit: int = Query(default=25, le=100),
+    limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ):
     q = select(BuyerLead).where(BuyerLead.user_id == user.id)
@@ -238,11 +246,14 @@ async def my_leads(
     for lead in leads:
         order_res = await db.execute(select(Order).where(Order.lead_id == lead.id))
         order_row = order_res.scalar_one_or_none()
+        merchant = await db.get(Merchant, lead.merchant_id)
+        snapshot = order_row.merchant_snapshot if order_row else None
         
         addr_dict = order_row.delivery_address if (order_row and order_row.delivery_address) else {}
         
         items.append(
             BuyerLeadOut(
+                merchant=OrderMerchantOut.model_validate(snapshot or merchant) if (snapshot or merchant) else None,
                 id=lead.id,
                 merchant_id=lead.merchant_id,
                 lead_type=lead.lead_type,
@@ -252,6 +263,7 @@ async def my_leads(
                 ai_generated_image_url=lead.ai_generated_image_url,
                 delivery_city=lead.delivery_city,
                 merchant_notes=lead.merchant_notes,
+                cancellation_reason=lead.cancellation_reason,
                 converted_at=lead.converted_at,
                 created_at=lead.created_at,
                 updated_at=lead.updated_at,

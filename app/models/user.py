@@ -31,7 +31,7 @@ class User(Base):
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Privacy preferences (DPDPA compliance & settings sync)
-    model_improvement_consent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    model_improvement_consent: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     buyer_signal_sharing: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     nominee_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     nominee_contact: Mapped[str | None] = mapped_column(String(255), nullable=True)

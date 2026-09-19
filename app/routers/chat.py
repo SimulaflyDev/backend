@@ -17,6 +17,7 @@ from app.schemas.product import MerchantProductOut
 from app.services.azure_ai_client import get_image_client
 from app.services.image_service import persist_base64, persist_image
 from app.services.llm import get_chat_llm
+from app.services.user_tokens import debit_tokens
 from app.services.rag_service import run_rag_turn
 from app.services.user_profile_service import extract_and_update_profile
 from app.services.visualize_jobs import (
@@ -58,12 +59,7 @@ async def analyze(
     # Check and deduct credits for makeover if style_name is present
     if body.style_name:
         cost = 2.0
-        if (user.credit_balance or 0.0) < cost:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"insufficient credits; need at least ₹{cost:.0f}"
-            )
-        user.credit_balance = (user.credit_balance or 0.0) - cost
+        await debit_tokens(db, user, cost)
 
     image = await persist_base64(
         db,
@@ -371,12 +367,7 @@ async def chat(
     image_job = None
     if result.image_generation_prompt:
         image_cost = 2.0
-        if (user.credit_balance or 0.0) < image_cost:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail="insufficient credits; image generation needs at least ₹2",
-            )
-        user.credit_balance = (user.credit_balance or 0.0) - image_cost
+        await debit_tokens(db, user, image_cost)
         image_job = await create_job(
             db,
             user_id=user.id,

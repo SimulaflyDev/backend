@@ -170,8 +170,18 @@ class BookingService:
 
         A missing booking raises HTTP 404 (R11.8).
         """
-        order = await self.get_booking(booking_id)
-        order.fulfillment_status = new_status.value
+        from app.models.lead import BuyerLead
+        from app.services.order_lifecycle import apply_order_update
+
+        order = (await self.db.execute(select(Order).where(
+            Order.id == booking_id, Order.deleted_at.is_(None),
+        ).with_for_update())).scalar_one_or_none()
+        if order is None:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        lead = (await self.db.execute(select(BuyerLead).where(
+            BuyerLead.id == order.lead_id,
+        ).with_for_update())).scalar_one()
+        await apply_order_update(self.db, order, lead, fulfillment_status=new_status.value)
         await self.db.commit()
         await self.db.refresh(order)
         return order

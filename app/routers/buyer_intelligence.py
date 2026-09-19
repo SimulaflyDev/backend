@@ -364,7 +364,8 @@ async def unlock_shopper(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
 
     # Credit user ₹20 on merchant unlock
-    user.credit_balance = (user.credit_balance or 0.0) + 20.0
+    from app.services.user_tokens import credit_tokens
+    await credit_tokens(db, user, 20.0)
     await db.commit()
 
     # Fetch latest lead for city + phone

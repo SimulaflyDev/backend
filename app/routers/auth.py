@@ -105,6 +105,7 @@ async def register(body: RegisterRequest, db: DBSession) -> User:
         email=body.email.lower(),
         hashed_password=hash_password(body.password),
         full_name=body.full_name,
+        model_improvement_consent=body.model_improvement_consent,
         is_email_verified=False,
         design_profile={"merchant_registration_agreements": merchant_agreements}
         if merchant_agreements
@@ -202,6 +203,7 @@ async def google_login(body: GoogleLoginRequest, db: DBSession) -> TokenPair:
                 email=identity.email,
                 hashed_password=None,
                 google_sub=identity.sub,
+                model_improvement_consent=body.model_improvement_consent,
                 full_name=identity.full_name,
                 avatar_url=identity.picture,
                 is_active=True,

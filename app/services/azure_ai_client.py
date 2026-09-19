@@ -15,8 +15,11 @@ LangChain handles chat / embeddings / vision — only image gen + edit live here
 from __future__ import annotations
 
 import base64
+import io
+from collections.abc import Sequence
 
 import httpx
+from PIL import Image, ImageOps
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import get_settings
@@ -38,6 +41,19 @@ def _deployment_url(endpoint: str, deployment: str, op: str) -> str:
     return f"{base}/openai/deployments/{deployment}/images/{op}?api-version={IMAGE_API_VERSION}"
 
 
+def _reference_png(image_bytes: bytes, *, label: str) -> bytes:
+    """Normalise uploads without cropping away product or room details."""
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as original:
+            image = ImageOps.exif_transpose(original).convert("RGBA")
+            image.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            return output.getvalue()
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
+        raise ValueError(f"Cannot read {label} image; upload a valid product or room photo.") from exc
+
+
 class AzureImageClient:
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -49,20 +65,24 @@ class AzureImageClient:
     async def image_edit(
         self,
         room_bytes: bytes,
-        product_bytes: bytes | None,  # noqa: ARG002 — reserved for future multi-image support
+        product_bytes: bytes | None,
         prompt: str,
         *,
         size: str = "1024x1024",
         fallback_prompt: str | None = None,
+        product_images: Sequence[bytes] = (),
     ) -> bytes:
-        """Primary compositing path — Azure /images/edits on gpt-image-1.5 deployment.
+        """Primary compositing path - Azure /images/edits on gpt-image-1.5 deployment.
 
-        Falls back to text-to-image generation on any 4xx (lets the API stay usable
-        even if the deployment doesn't expose edits).
+        The first image is the room; subsequent images are exact catalog product
+        references, in prompt order. Product previews must never fall back to
+        text-only generation, which cannot preserve the selected product.
 
-        We enforce n=1 throughout to prevent the API from returning multiple data
-        items and to avoid unexpected duplicate renders on the client.
+        Reference-free style/general-image callers retain their existing fallback.
         """
+        references = ([product_bytes] if product_bytes is not None else []) + list(product_images)
+        if len(references) > 15:
+            raise ValueError("A preview supports at most 15 product references plus the room.")
         deployment = self.settings.AZURE_IMAGE_EDIT_DEPLOYMENT
         gen_prompt = fallback_prompt or prompt
         if not deployment or not self.enabled:
@@ -71,47 +91,31 @@ class AzureImageClient:
                 has_deployment=bool(deployment),
                 ai_enabled=self.enabled,
             )
+            if references:
+                raise RuntimeError("Product previews require a configured image-edit deployment.")
             return await self.image_gen(gen_prompt, size=size)
 
-        import io
-        from PIL import Image
-
-        try:
-            img = Image.open(io.BytesIO(room_bytes))
-            if img.mode != "RGBA":
-                img = img.convert("RGBA")
-            
-            # Crop to square
-            w, h = img.size
-            if w != h:
-                size_min = min(w, h)
-                left = (w - size_min) // 2
-                top = (h - size_min) // 2
-                img = img.crop((left, top, left + size_min, top + size_min))
-            
-            # Ensure it's not too large (max 1024x1024 usually preferred)
-            img.thumbnail((1024, 1024))
-            
-            out = io.BytesIO()
-            img.save(out, format="PNG")
-            png_bytes = out.getvalue()
-        except Exception as e:
-            log.warning("image_edit.png_conversion_failed", error=str(e))
-            png_bytes = room_bytes
-
         url = _deployment_url(self.settings.AZURE_AI_FOUNDRY_ENDPOINT, deployment, "edits")
+        field = "image[]" if references else "image"
         files: list[tuple[str, tuple[str, bytes, str]]] = [
-            ("image", ("room.png", png_bytes, "image/png")),
+            (field, ("room.png", _reference_png(room_bytes, label="room"), "image/png")),
         ]
+        for index, reference in enumerate(references, start=1):
+            files.append((
+                field,
+                (f"product_{index}.png", _reference_png(reference, label=f"product {index}"), "image/png"),
+            ))
         data = {
-            "prompt": prompt[:4000],
+            "prompt": prompt,
             "size": size,
             "n": "1",  # always exactly one output image
         }
+        if references:
+            data["input_fidelity"] = "high"
         try:
             return await self._post_multipart(url, files=files, data=data)
         except httpx.HTTPStatusError as e:
-            if 400 <= e.response.status_code < 500:
+            if not references and 400 <= e.response.status_code < 500:
                 log.warning(
                     "image_edit.fallback_to_gen",
                     status=e.response.status_code,

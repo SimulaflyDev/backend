@@ -9,6 +9,7 @@ class RegisterRequest(BaseModel):
     terms_accepted: bool = False
     privacy_policy_accepted: bool = False
     merchant_agreement_accepted: bool = False
+    model_improvement_consent: bool = True
 
 
 class LoginRequest(BaseModel):
@@ -23,6 +24,8 @@ class RefreshRequest(BaseModel):
 class GoogleLoginRequest(BaseModel):
     id_token: str = Field(min_length=10)
     referred_by_code: str | None = Field(default=None, max_length=40)
+    # Applied only when creating a NEW account, never to an existing choice.
+    model_improvement_consent: bool = True
 
 
 class TokenPair(BaseModel):

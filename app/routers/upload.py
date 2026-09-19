@@ -57,6 +57,20 @@ async def fetch_room_image(image_id: uuid.UUID, db: DBSession) -> Response:
     )
 
 
+@router.get("/room-image/{image_id}/download")
+async def download_room_image(image_id: uuid.UUID, user: CurrentUser, db: DBSession) -> Response:
+    """Private export of the original bytes; never publish a new share URL."""
+    image = await get_owned(db, image_id=image_id, owner_id=user.id)
+    if not image:
+        raise HTTPException(status_code=404, detail="image not found")
+    extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}.get(image.media_type, "bin")
+    return Response(content=image.data, media_type=image.media_type, headers={
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": f'attachment; filename="Simulafly-{image.id}.{extension}"',
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
 @router.post(
     "/merchant-product-image",
     response_model=MerchantProductImageOut,

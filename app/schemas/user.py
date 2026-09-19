@@ -46,6 +46,7 @@ class UserOut(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     full_name: str | None = Field(default=None, max_length=255)
     avatar_url: str | None = Field(default=None, max_length=1024)
     phone: str | None = Field(default=None, max_length=20)
@@ -61,5 +62,4 @@ class UserUpdate(BaseModel):
     nominee_contact: str | None = Field(default=None, max_length=255)
     push_notifications: bool | None = Field(default=None)
     marketing_consent: bool | None = Field(default=None)
-    credit_balance: float | None = Field(default=None)
     is_email_verified: bool | None = Field(default=None)

@@ -39,6 +39,8 @@ class DisputeStatus(str, enum.Enum):
 class FulfillmentStatus(str, enum.Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    SHIPPED = "shipped"
+    OUT_FOR_DELIVERY = "out_for_delivery"
     FULFILLED = "fulfilled"
     CANCELLED = "cancelled"
 
@@ -154,6 +156,14 @@ class Order(Base):
         Numeric(14, 2), nullable=False, default=Decimal("0")
     )
     delivery_address: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    merchant_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    payment_status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending", nullable=False)
+    payment_completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    shipped_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    out_for_delivery_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    reward_granted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    reward_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     merchant_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True

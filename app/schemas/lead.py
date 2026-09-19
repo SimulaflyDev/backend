@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -49,6 +50,8 @@ class BuyerLeadUpdate(BaseModel):
     status: str | None = None   # new|synced|converted|lost
     merchant_notes: str | None = None
     cancellation_reason: CancellationReason | None = None
+    fulfillment_status: Literal["pending", "in_progress", "shipped", "out_for_delivery", "fulfilled", "cancelled"] | None = None
+    payment_status: Literal["paid"] | None = None
 
 
 # ── Shared output types ───────────────────────────────────────────────────────
@@ -66,6 +69,20 @@ class CustomerInfo(BaseModel):
     longitude: float | None = None
 
 
+class OrderMerchantOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    display_name: str
+    legal_name: str
+    slug: str
+    shop_id: str | None = None
+    partner_id: str | None = None
+    address: str | None = None
+    support_phone: str | None = None
+    support_email: str | None = None
+
+
 class OrderOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -80,6 +97,15 @@ class OrderOut(BaseModel):
     fee_charged_at: datetime | None = None
     platform_fee_amount: Decimal
     completed_at: datetime | None = None
+    fulfillment_status: str = "pending"
+    payment_status: str = "unknown"
+    payment_completed_at: datetime | None = None
+    shipped_at: datetime | None = None
+    out_for_delivery_at: datetime | None = None
+    delivered_at: datetime | None = None
+    reward_granted_at: datetime | None = None
+    reward_tokens: int = 0
+    delivery_address: dict = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -104,6 +130,7 @@ class BuyerLeadOut(BaseModel):
     # Joined at query time — not ORM-native
     customer: CustomerInfo
     order: OrderOut | None = None
+    merchant: OrderMerchantOut | None = None
 
 
 class PaginatedLeads(BaseModel):
