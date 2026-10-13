@@ -228,6 +228,7 @@ User=$RUNNING_USER
 Group=$RUNNING_GROUP
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENV_FILE
+ExecStartPre=$APP_DIR/venv/bin/alembic -c $APP_DIR/alembic.ini upgrade head
 ExecStart=$APP_DIR/venv/bin/gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:$PORT
 Restart=always
 RestartSec=5
@@ -243,7 +244,8 @@ systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
 echo -e "${SUCCESS} ${GREEN}Systemd service '$SERVICE_NAME' created and enabled.${NC}"
 
-# Step 8: Run Alembic Database Migrations (required before starting code)
+# Step 8: Run Alembic Database Migrations (required before starting code).
+# The systemd ExecStartPre above repeats this safety check on manual restarts.
 echo -e "\n${PROGRESS} ${CYAN}Step 8: Running database migrations...${NC}"
 DB_URL=$(grep -E "^DATABASE_URL=" "$ENV_FILE" | cut -d'=' -f2- || true)
 
@@ -252,7 +254,14 @@ if [[ -z "$DB_URL" || "$DB_URL" == *"localhost"* || "$DB_URL" == *"change-me"* ]
     exit 1
 else
     echo -e "${INFO} DATABASE_URL detected, running migrations..."
-    if sudo -u "$RUNNING_USER" ENV=production "$APP_DIR/venv/bin/alembic" upgrade head; then
+    # Alembic and pydantic-settings resolve alembic.ini/.env from the current
+    # directory. deploy.sh can be launched from anywhere, so run from APP_DIR
+    # and pass the config path explicitly.
+    if (
+        cd "$APP_DIR"
+        sudo -u "$RUNNING_USER" env ENV=production \
+            "$APP_DIR/venv/bin/alembic" -c "$APP_DIR/alembic.ini" upgrade head
+    ); then
         echo -e "${SUCCESS} ${GREEN}Database schema updated to the latest revision successfully!${NC}"
     else
         echo -e "${ERROR} ${RED}Database migration failed; the service was not restarted with incompatible code.${NC}"

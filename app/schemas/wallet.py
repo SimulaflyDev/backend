@@ -91,6 +91,24 @@ class BalanceHistoryItemProduct(BaseModel):
     image_url: str | None = None
 
 
+class BalanceHistoryOrderItem(BaseModel):
+    product_id: str | None = None
+    title: str
+    sku: str
+    quantity: int
+
+
+class BalanceHistoryOrderDetails(BaseModel):
+    id: str
+    created_at: datetime
+    accepted_at: datetime | None = None
+    status: str
+    buyer_name: str | None = None
+    buyer_address: str | None = None
+    total_value: float
+    items: list[BalanceHistoryOrderItem]
+
+
 class BalanceHistoryItem(BaseModel):
     id: str
     created_at: datetime
@@ -99,8 +117,12 @@ class BalanceHistoryItem(BaseModel):
     reason: str
     payment_method: str | None = None
     gateway_ref: str | None = None
+    gateway: str | None = None
+    payment_order_id: str | None = None
+    reference_id: str | None = None
     running_balance: float
     product: BalanceHistoryItemProduct | None = None
+    order: BalanceHistoryOrderDetails | None = None
 
 
 class BalanceHistoryResponse(BaseModel):

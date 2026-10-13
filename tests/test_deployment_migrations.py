@@ -6,8 +6,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_vm_deployment_cannot_start_when_migrations_fail():
     script = (ROOT / "deploy.sh").read_text(encoding="utf-8")
+    service = script[script.index("[Service]"):script.index("[Install]")]
     migration = script[script.index("# Step 8:"):script.index("# Step 9:")]
-    assert 'alembic" upgrade head' in migration
+    assert "WorkingDirectory=$APP_DIR" in service
+    assert "ExecStartPre=$APP_DIR/venv/bin/alembic -c $APP_DIR/alembic.ini upgrade head" in service
+    assert 'cd "$APP_DIR"' in migration
+    assert 'alembic" -c "$APP_DIR/alembic.ini" upgrade head' in migration
     assert migration.count("exit 1") >= 2
     assert "Skipping database migrations" not in migration
 

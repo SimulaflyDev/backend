@@ -6,9 +6,11 @@ from sqlalchemy import func, select, or_, and_
 
 from app.models.wallet import Transaction, Wallet
 from app.models.event import LedgerEntry, BuyerEvent
+from app.models.lead import Order
 from app.models.merchant_product import MerchantProduct
 from app.models.merchant import Merchant, MerchantMember
 from app.models.notification import Notification
+from app.models.user import User
 from app.schemas.wallet import (
     PaginatedTransactions,
     TransactionOut,
@@ -276,10 +278,14 @@ async def get_balance_history(
                 BuyerEvent.event_type.label("buyer_event_type"),
                 MerchantProduct.title.label("product_title"),
                 MerchantProduct.sku.label("product_sku"),
-                MerchantProduct.primary_image_url.label("product_image_url")
+                MerchantProduct.primary_image_url.label("product_image_url"),
+                Order,
+                User.full_name.label("buyer_name"),
             )
             .outerjoin(BuyerEvent, LedgerEntry.related_event_id == BuyerEvent.id)
             .outerjoin(MerchantProduct, BuyerEvent.merchant_product_id == MerchantProduct.id)
+            .outerjoin(Order, LedgerEntry.related_order_id == Order.id)
+            .outerjoin(User, Order.user_id == User.id)
             .where(LedgerEntry.merchant_id == ctx.merchant.id)
         )
         if start_date:
@@ -321,7 +327,11 @@ async def get_balance_history(
             "reason": "topup",
             "payment_method": tx.payment_method or "UPI",
             "gateway_ref": tx.gateway_ref,
+            "gateway": tx.gateway,
+            "payment_order_id": tx.razorpay_order_id,
+            "reference_id": str(tx.id),
             "product": None,
+            "order": None,
             "running_balance": 0.0,
         })
 
@@ -331,6 +341,8 @@ async def get_balance_history(
         p_title = row[2]
         p_sku = row[3]
         p_img = row[4]
+        order = row[5]
+        buyer_name = row[6]
 
         if ledg.related_txn_id in visible_transaction_ids:
             continue
@@ -364,6 +376,42 @@ async def get_balance_history(
                 "image_url": p_img
             }
 
+        order_details = None
+        if order is not None:
+            order_items = []
+            for item in order.items or []:
+                order_items.append({
+                    "product_id": str(item.get("product_id")) if item.get("product_id") else None,
+                    "title": str(item.get("title") or "Product"),
+                    "sku": str(item.get("sku") or "-"),
+                    "quantity": int(item.get("qty") or 1),
+                })
+
+            address = order.delivery_address or {}
+            address_parts = [
+                address.get("address_line1"),
+                address.get("city"),
+                address.get("state"),
+                address.get("pincode"),
+            ]
+            order_details = {
+                "id": str(order.id),
+                "created_at": order.created_at,
+                "accepted_at": order.accepted_at,
+                "status": order.status,
+                "buyer_name": buyer_name,
+                "buyer_address": ", ".join(str(part) for part in address_parts if part),
+                "total_value": float(order.total_estimated),
+                "items": order_items,
+            }
+
+            if prod is None and order_items:
+                prod = {
+                    "title": order_items[0]["title"],
+                    "sku": order_items[0]["sku"],
+                    "image_url": None,
+                }
+
         items.append({
             "id": f"le_{ledg.id}",
             "created_at": ledg.created_at,
@@ -372,7 +420,11 @@ async def get_balance_history(
             "reason": ledg.reason,
             "payment_method": None,
             "gateway_ref": None,
+            "gateway": None,
+            "payment_order_id": None,
+            "reference_id": str(ledg.related_event_id) if ledg.related_event_id else None,
             "product": prod,
+            "order": order_details,
             "running_balance": 0.0,
         })
 

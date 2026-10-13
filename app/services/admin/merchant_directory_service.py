@@ -32,8 +32,22 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.merchant import Merchant, MerchantMember, MerchantStatus
+from app.models.merchant_verification import GstinVerification, PanVerification
 from app.models.wallet import Wallet
+from app.schemas.admin.merchants import MerchantShopCreateRequest
 from app.services.admin.listing import ListParams, Page, paginate
+from app.utils.id_generator import generate_mpuid, generate_mpsuid
+from app.utils.slug import make_unique_slug, slugify_base
+
+
+_STATE_EXPR = func.coalesce(
+    Merchant.settings["onboarding_data"]["state"].as_string(),
+    Merchant.settings["onboarding_submission"]["shop"]["shop_address"]["state"].as_string(),
+)
+_CITY_EXPR = func.coalesce(
+    Merchant.settings["onboarding_data"]["city"].as_string(),
+    Merchant.settings["onboarding_submission"]["shop"]["shop_address"]["city"].as_string(),
+)
 
 #: Whitelisted sortable columns for the merchant directory (R8 / R20.4).
 #: Also used by the listing engine to resolve string *filter* keys to columns,
@@ -46,6 +60,8 @@ _SORTABLE: dict[str, ColumnElement] = {
     "created_at": Merchant.created_at,
     "partner_id": Merchant.partner_id,
     "shop_id": Merchant.shop_id,
+    "state": _STATE_EXPR,
+    "city": _CITY_EXPR,
 }
 
 #: Role string identifying the owning member of a merchant (shop).
@@ -55,6 +71,8 @@ _OWNER_ROLE = "owner"
 _SEARCHABLE: tuple[ColumnElement, ...] = (
     Merchant.display_name,
     Merchant.legal_name,
+    _STATE_EXPR,
+    _CITY_EXPR,
 )
 
 
@@ -76,6 +94,8 @@ class MerchantDirectoryService:
         partner_id: str | None = None,
         owner_user_id: uuid.UUID | None = None,
         primary_only: bool = False,
+        state_filter: str | None = None,
+        city_filter: str | None = None,
     ) -> Page:
         """Return a page of merchants (R8.1, R8.2, R8.3).
 
@@ -108,6 +128,14 @@ class MerchantDirectoryService:
         # Base statement; when filtering by owner we join the owning membership
         # so we list every shop run by that user (grouping key for shops).
         base_stmt = select(Merchant)
+        if state_filter and state_filter.strip():
+            base_stmt = base_stmt.where(
+                func.lower(_STATE_EXPR) == state_filter.strip().lower()
+            )
+        if city_filter and city_filter.strip():
+            base_stmt = base_stmt.where(
+                func.lower(_CITY_EXPR) == city_filter.strip().lower()
+            )
         if owner_user_id is not None:
             base_stmt = base_stmt.join(
                 MerchantMember, MerchantMember.merchant_id == Merchant.id
@@ -136,7 +164,9 @@ class MerchantDirectoryService:
             searchable=_SEARCHABLE,
         )
 
-    async def get_merchant(self, merchant_id: uuid.UUID) -> tuple[Merchant, Wallet | None]:
+    async def get_merchant(
+        self, merchant_id: uuid.UUID
+    ) -> tuple[Merchant, Wallet | None, PanVerification | None, GstinVerification | None]:
         """Load a merchant with its members and wallet summary (R8.4).
 
         Members are eagerly loaded together with their linked user so the detail
@@ -151,7 +181,109 @@ class MerchantDirectoryService:
                 select(Wallet).where(Wallet.merchant_id == merchant_id)
             )
         ).scalar_one_or_none()
-        return merchant, wallet
+        owner = next((member for member in merchant.members if member.role == _OWNER_ROLE), None)
+        pan = None
+        if owner is not None:
+            pan = (
+                await self.db.execute(
+                    select(PanVerification).where(PanVerification.user_id == owner.user_id)
+                )
+            ).scalar_one_or_none()
+        gstin = (
+            await self.db.execute(
+                select(GstinVerification).where(GstinVerification.merchant_id == merchant_id)
+            )
+        ).scalar_one_or_none()
+        return merchant, wallet, pan, gstin
+
+    async def create_shop(
+        self, merchant_id: uuid.UUID, payload: MerchantShopCreateRequest
+    ) -> Merchant:
+        """Create an unverified shop for the selected merchant owner."""
+        source = await self._get_or_404(merchant_id, load_members=True)
+        owner = next((member for member in source.members if member.role == _OWNER_ROLE), None)
+        if owner is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="merchant has no owner account",
+            )
+
+        partner_id = source.partner_id or await generate_mpuid(
+            self.db, state_code=payload.state_code, city_code=payload.city_code
+        )
+        shop_id = await generate_mpsuid(
+            self.db, partner_id=partner_id, city_code=payload.city_code
+        )
+        base = slugify_base(payload.legal_name or payload.display_name)
+        existing_slugs = set(
+            (
+                await self.db.execute(
+                    select(Merchant.slug).where(Merchant.slug.like(f"{base}%"))
+                )
+            ).scalars().all()
+        )
+        slug = make_unique_slug(
+            payload.legal_name or payload.display_name,
+            lambda candidate: candidate in existing_slugs,
+        )
+        referral_code = f"SIMULA-{uuid.uuid4().hex[:12].upper()}"
+        settings = {
+            "admin_created": True,
+            "onboarding_completed": False,
+            "onboarding_data": {"state": payload.state.strip(), "city": payload.city.strip()},
+        }
+        merchant = Merchant(
+            partner_id=partner_id,
+            shop_id=shop_id,
+            slug=slug,
+            legal_name=payload.legal_name or source.legal_name,
+            display_name=payload.display_name,
+            support_email=str(payload.support_email) if payload.support_email else source.support_email,
+            support_phone=payload.support_phone or source.support_phone,
+            country=source.country,
+            status=MerchantStatus.TRIAL.value,
+            settings=settings,
+            referral_code=referral_code,
+            address=payload.address,
+            latitude=payload.latitude,
+            longitude=payload.longitude,
+            range_km=payload.range_km,
+            is_kyc_completed=False,
+            kyc_bonus_paid=source.kyc_bonus_paid,
+        )
+        self.db.add(merchant)
+        await self.db.flush()
+        self.db.add(
+            MerchantMember(
+                merchant_id=merchant.id,
+                user_id=owner.user_id,
+                role=_OWNER_ROLE,
+            )
+        )
+        self.db.add(Wallet(merchant_id=merchant.id))
+        await self.db.commit()
+        await self.db.refresh(merchant)
+        return merchant
+
+    @staticmethod
+    def location_for(merchant: Merchant) -> tuple[str | None, str | None]:
+        settings = merchant.settings if isinstance(merchant.settings, dict) else {}
+        onboarding = settings.get("onboarding_data")
+        if not isinstance(onboarding, dict):
+            onboarding = {}
+        submission = settings.get("onboarding_submission")
+        if not isinstance(submission, dict):
+            submission = {}
+        shop = submission.get("shop") if isinstance(submission.get("shop"), dict) else {}
+        shop_address = (
+            shop.get("shop_address") if isinstance(shop.get("shop_address"), dict) else {}
+        )
+        state = onboarding.get("state") or shop_address.get("state")
+        city = onboarding.get("city") or shop_address.get("city")
+        return (
+            str(state).strip() if state else None,
+            str(city).strip() if city else None,
+        )
 
     async def set_status(self, merchant_id: uuid.UUID, new_status: str) -> Merchant:
         """Set a merchant's status and return the updated row (R8.5, R8.6).

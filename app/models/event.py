@@ -89,6 +89,12 @@ class LedgerEntry(Base):
         ForeignKey("transactions.id", ondelete="SET NULL"),
         nullable=True,
     )
+    related_order_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("orders.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     entry_type: Mapped[str] = mapped_column(String(16), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
     reason: Mapped[str] = mapped_column(String(64), nullable=False)

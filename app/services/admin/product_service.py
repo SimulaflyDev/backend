@@ -14,8 +14,9 @@ The :class:`ProductService` backs the admin ``products`` router. It implements:
     router wraps this in an ``audited(...)`` dependency so the action is
     recorded.
 
-``MerchantProduct`` has no soft-delete column, so no soft-delete exclusion is
-applied here.
+Admin "delete" is deliberately implemented as an archive transition: the row
+is retained for audit/recovery while ``has_simulafly_listing`` is disabled, so
+it disappears from customer-facing product queries.
 """
 
 from __future__ import annotations
@@ -26,10 +27,12 @@ from decimal import Decimal
 
 from fastapi import HTTPException, status as http_status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.merchant import Merchant
 from app.models.merchant_product import MerchantProduct, ProductStatus
+from app.schemas.admin.products import ProductCreateRequest, ProductUpdateRequest
 from app.services.admin.listing import ListParams, Page, paginate
 
 #: Whitelist of sortable fields → column expressions for the product listing.
@@ -69,10 +72,14 @@ class ProductListRow:
     """A flattened product listing row including the resolved merchant name."""
 
     id: uuid.UUID
+    sku: str
     title: str
     merchant_id: uuid.UUID
     merchant_name: str | None
     price: Decimal | None
+    category: str | None
+    primary_image_url: str | None
+    in_app_stock: int | None
     status: str
     created_at: object
 
@@ -127,10 +134,14 @@ class ProductService:
         page.items = [
             ProductListRow(
                 id=product.id,
+                sku=product.sku,
                 title=product.title,
                 merchant_id=product.merchant_id,
                 merchant_name=merchant_names.get(product.merchant_id),
                 price=product.in_app_price,
+                category=product.category,
+                primary_image_url=product.primary_image_url,
+                in_app_stock=product.in_app_stock,
                 status=product.status,
                 created_at=product.created_at,
             )
@@ -153,6 +164,70 @@ class ProductService:
         names = await self._resolve_merchant_names({merchant_id})
         return names.get(merchant_id)
 
+    async def create_product(self, payload: ProductCreateRequest) -> MerchantProduct:
+        """Create one product for an existing merchant shop."""
+        await self._ensure_merchants_exist({payload.merchant_id})
+        product = self._build_product(payload)
+        self.db.add(product)
+        try:
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail=f"SKU '{payload.sku}' already exists for this merchant",
+            ) from exc
+        await self.db.refresh(product)
+        return product
+
+    async def bulk_create_products(
+        self, payloads: list[ProductCreateRequest]
+    ) -> list[MerchantProduct]:
+        """Create a bounded batch atomically; any conflict rolls back all rows."""
+        await self._ensure_merchants_exist({item.merchant_id for item in payloads})
+        products = [self._build_product(item) for item in payloads]
+        self.db.add_all(products)
+        try:
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail="Bulk add failed because one or more SKUs already exist",
+            ) from exc
+        for product in products:
+            await self.db.refresh(product)
+        return products
+
+    async def update_product(
+        self, product_id: uuid.UUID, payload: ProductUpdateRequest
+    ) -> MerchantProduct:
+        """Update editable product fields while preserving its database row."""
+        product = await self.get_product(product_id)
+        data = payload.model_dump(exclude_unset=True)
+        if "price" in data:
+            data["in_app_price"] = data.pop("price")
+        status_value = data.get("status")
+        if status_value is not None:
+            data["status"] = status_value.value
+            data["has_simulafly_listing"] = status_value == ProductStatus.PUBLISHED
+        for key, value in data.items():
+            setattr(product, key, value)
+        try:
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail="A product with this SKU already exists for the merchant",
+            ) from exc
+        await self.db.refresh(product)
+        return product
+
+    async def archive_product(self, product_id: uuid.UUID) -> MerchantProduct:
+        """Soft-delete a product by archiving it and removing app visibility."""
+        return await self.update_status(product_id, ProductStatus.ARCHIVED)
+
     async def update_status(
         self,
         product_id: uuid.UUID,
@@ -165,13 +240,35 @@ class ProductService:
         """
         product = await self.get_product(product_id)
         product.status = new_status.value
-        if new_status == ProductStatus.PUBLISHED:
-            product.has_simulafly_listing = True
-        elif new_status == ProductStatus.ARCHIVED:
-            product.has_simulafly_listing = False
+        product.has_simulafly_listing = new_status == ProductStatus.PUBLISHED
         await self.db.commit()
         await self.db.refresh(product)
         return product
+
+    @staticmethod
+    def _build_product(payload: ProductCreateRequest) -> MerchantProduct:
+        data = payload.model_dump()
+        data["status"] = payload.status.value
+        data["in_app_price"] = data.pop("price")
+        data["has_simulafly_listing"] = payload.status == ProductStatus.PUBLISHED
+        return MerchantProduct(**data)
+
+    async def _ensure_merchants_exist(self, merchant_ids: set[uuid.UUID]) -> None:
+        if not merchant_ids:
+            return
+        existing = set(
+            (
+                await self.db.execute(
+                    select(Merchant.id).where(Merchant.id.in_(merchant_ids))
+                )
+            ).scalars().all()
+        )
+        missing = merchant_ids - existing
+        if missing:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail=f"merchant not found: {next(iter(missing))}",
+            )
 
     async def _resolve_merchant_names(
         self,

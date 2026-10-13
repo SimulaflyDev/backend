@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class MerchantListItem(BaseModel):
@@ -38,6 +38,8 @@ class MerchantListItem(BaseModel):
     legal_name: str
     status: str
     is_kyc_completed: bool
+    state: str | None = None
+    city: str | None = None
     created_at: datetime
 
 
@@ -89,6 +91,8 @@ class MerchantDetail(BaseModel):
     is_kyc_completed: bool
     country: str
     address: str | None = None
+    state: str | None = None
+    city: str | None = None
     latitude: float | None = None
     longitude: float | None = None
     range_km: float | None = None
@@ -98,6 +102,7 @@ class MerchantDetail(BaseModel):
     updated_at: datetime
     members: list[MerchantMemberOut]
     wallet: WalletSummary | None = None
+    kyc: "MerchantKycDetail"
 
 
 class MerchantStatusResponse(BaseModel):
@@ -108,3 +113,46 @@ class MerchantStatusResponse(BaseModel):
     id: uuid.UUID
     display_name: str
     status: str
+
+
+class PanKycDetail(BaseModel):
+    masked_pan: str
+    verified_name: str
+    category: str
+    provider_transaction_id: str | None = None
+    verified_at: datetime
+
+
+class GstinKycDetail(BaseModel):
+    gstin: str
+    legal_name: str
+    business_nature: str | None = None
+    state_name: str | None = None
+    state_code: str | None = None
+    registration_status: str
+    registration_start_date: str | None = None
+    provider_transaction_id: str | None = None
+    verified_at: datetime
+
+
+class MerchantKycDetail(BaseModel):
+    completed: bool
+    pan: PanKycDetail | None = None
+    gstin: GstinKycDetail | None = None
+
+
+class MerchantShopCreateRequest(BaseModel):
+    """Create a new shop under the selected merchant owner's partner account."""
+
+    display_name: str = Field(min_length=2, max_length=255)
+    legal_name: str | None = Field(default=None, min_length=2, max_length=255)
+    address: str = Field(min_length=5, max_length=1024)
+    state: str = Field(min_length=2, max_length=100)
+    city: str = Field(min_length=2, max_length=100)
+    state_code: str = Field(default="DL", min_length=2, max_length=2)
+    city_code: str = Field(default="N", min_length=1, max_length=1)
+    support_email: EmailStr | None = None
+    support_phone: str | None = Field(default=None, max_length=50)
+    latitude: float | None = None
+    longitude: float | None = None
+    range_km: float | None = Field(default=None, ge=0)

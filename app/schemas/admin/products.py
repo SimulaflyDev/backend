@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.merchant_product import ProductStatus
 from app.schemas.admin.listing import ListingEnvelope
@@ -29,10 +29,14 @@ class ProductListItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    sku: str
     title: str
     merchant_id: uuid.UUID
     merchant_name: str | None = None
     price: Decimal | None = None
+    category: str | None = None
+    primary_image_url: str | None = None
+    in_app_stock: int | None = None
     status: str
     created_at: datetime
 
@@ -57,6 +61,7 @@ class ProductDetail(BaseModel):
     brand: str | None = None
     status: str
     primary_image_url: str | None = None
+    additional_images: list[str] = Field(default_factory=list)
     has_simulafly_listing: bool
     price: Decimal | None = None
     in_app_stock: int | None = None
@@ -84,3 +89,47 @@ class ProductStatusResponse(BaseModel):
 
     id: uuid.UUID
     status: str
+
+
+class ProductCreateRequest(BaseModel):
+    """Admin payload for adding a product to a merchant shop."""
+
+    merchant_id: uuid.UUID
+    sku: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=500)
+    description: str | None = None
+    category: str | None = Field(default=None, max_length=255)
+    subcategory: str | None = Field(default=None, max_length=255)
+    brand: str | None = Field(default=None, max_length=255)
+    status: ProductStatus = ProductStatus.DRAFT
+    primary_image_url: str | None = Field(default=None, max_length=2048)
+    additional_images: list[str] = Field(default_factory=list, max_length=4)
+    price: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    in_app_stock: int | None = Field(default=None, ge=0)
+
+
+class ProductUpdateRequest(BaseModel):
+    """Editable product fields. Omitted fields are left unchanged."""
+
+    sku: str | None = Field(default=None, min_length=1, max_length=64)
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    description: str | None = None
+    category: str | None = Field(default=None, max_length=255)
+    subcategory: str | None = Field(default=None, max_length=255)
+    brand: str | None = Field(default=None, max_length=255)
+    status: ProductStatus | None = None
+    primary_image_url: str | None = Field(default=None, max_length=2048)
+    additional_images: list[str] | None = Field(default=None, max_length=4)
+    price: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    in_app_stock: int | None = Field(default=None, ge=0)
+
+
+class ProductBulkCreateRequest(BaseModel):
+    """Atomic bulk-add request, capped to keep admin actions bounded."""
+
+    items: list[ProductCreateRequest] = Field(min_length=1, max_length=100)
+
+
+class ProductBulkCreateResponse(BaseModel):
+    created: int
+    items: list[ProductDetail]

@@ -543,7 +543,9 @@ async def test_balance_history_unified_and_filtered(auth_client, db_session, ver
         amount=Decimal("1000.00"),
         status="successful",
         payment_method="UPI",
+        gateway="razorpay",
         gateway_ref="ref_100",
+        razorpay_order_id="order_100",
         created_at=now - timedelta(hours=2)
     )
     db_session.add(tx)
@@ -621,6 +623,11 @@ async def test_balance_history_unified_and_filtered(auth_client, db_session, ver
 
     assert items[2]["entry_type"] == "Deposit"
     assert items[2]["running_balance"] == 1000.0
+    assert items[2]["gateway"] == "razorpay"
+    assert items[2]["gateway_ref"] == "ref_100"
+    assert items[2]["payment_order_id"] == "order_100"
+    assert items[2]["reference_id"] == str(tx.id)
+    assert items[2]["order"] is None
 
     # Test filtering by event_filter=topups
     r = await auth_client.get(

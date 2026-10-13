@@ -122,6 +122,7 @@ class BillingService:
         amount: Decimal,
         reason: str,
         related_event_id: uuid.UUID | None = None,
+        related_order_id: uuid.UUID | None = None,
     ) -> None:
         """Deduct `amount` from the merchant's wallet and write a LedgerEntry."""
         res = await self.db.execute(select(Wallet).where(Wallet.merchant_id == merchant_id))
@@ -135,6 +136,7 @@ class BillingService:
             merchant_id=merchant_id,
             wallet_id=wallet.id,
             related_event_id=related_event_id,
+            related_order_id=related_order_id,
             entry_type="deduction",
             amount=-amount,
             reason=reason,
@@ -164,6 +166,7 @@ class BillingService:
                 merchant_id=order.merchant_id,
                 amount=amount,
                 reason="order_confirmation",
+                related_order_id=order.id,
             )
 
         order.platform_fee_amount = amount

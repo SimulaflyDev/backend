@@ -133,6 +133,27 @@ async def test_coupon_is_server_calculated_and_fee_is_charged_on_acceptance(
     )
     assert len(ledger_rows) == 1
     assert ledger_rows[0].amount == Decimal("-45")
+    assert ledger_rows[0].related_order_id == uuid.UUID(accepted_order["id"])
+
+    history = await auth_client.get(
+        "/api/v1/merchant/wallet/balance-history",
+        headers=headers,
+    )
+    assert history.status_code == 200, history.text
+    service_fee = next(
+        item for item in history.json()["items"]
+        if item["reason"] == "order_confirmation"
+    )
+    assert service_fee["reference_id"] is None
+    assert service_fee["order"]["id"] == accepted_order["id"]
+    assert service_fee["order"]["buyer_name"] == test_user.full_name
+    assert service_fee["order"]["items"][0] == {
+        "product_id": str(product.id),
+        "title": "Coupon Sofa",
+        "sku": product.sku,
+        "quantity": 1,
+    }
+    assert service_fee["order"]["total_value"] == 900.0
 
     # Re-accepting and later completing the same order must not charge again.
     repeated = await auth_client.patch(

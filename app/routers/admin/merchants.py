@@ -27,13 +27,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.merchant import Merchant, MerchantStatus
+from app.models.merchant_verification import GstinVerification, PanVerification
 from app.models.wallet import Wallet
 from app.schemas.admin.listing import ListingEnvelope
 from app.schemas.admin.merchants import (
     MerchantDetail,
     MerchantListItem,
     MerchantMemberOut,
+    MerchantKycDetail,
+    MerchantShopCreateRequest,
     MerchantStatusResponse,
+    GstinKycDetail,
+    PanKycDetail,
     WalletSummary,
 )
 from app.services.admin.audit_service import AuditContext, audited
@@ -53,7 +58,28 @@ def _to_status_response(merchant: Merchant) -> MerchantStatusResponse:
     )
 
 
-def _to_detail(merchant: Merchant, wallet: Wallet | None) -> MerchantDetail:
+def _to_list_item(merchant: Merchant) -> MerchantListItem:
+    state, city = MerchantDirectoryService.location_for(merchant)
+    return MerchantListItem(
+        id=merchant.id,
+        partner_id=merchant.partner_id,
+        shop_id=merchant.shop_id,
+        display_name=merchant.display_name,
+        legal_name=merchant.legal_name,
+        status=merchant.status,
+        is_kyc_completed=merchant.is_kyc_completed,
+        state=state,
+        city=city,
+        created_at=merchant.created_at,
+    )
+
+
+def _to_detail(
+    merchant: Merchant,
+    wallet: Wallet | None,
+    pan: PanVerification | None,
+    gstin: GstinVerification | None,
+) -> MerchantDetail:
     members = [
         MerchantMemberOut(
             id=member.id,
@@ -65,6 +91,7 @@ def _to_detail(merchant: Merchant, wallet: Wallet | None) -> MerchantDetail:
         )
         for member in merchant.members
     ]
+    state, city = MerchantDirectoryService.location_for(merchant)
     return MerchantDetail(
         id=merchant.id,
         partner_id=merchant.partner_id,
@@ -76,6 +103,8 @@ def _to_detail(merchant: Merchant, wallet: Wallet | None) -> MerchantDetail:
         is_kyc_completed=merchant.is_kyc_completed,
         country=merchant.country,
         address=merchant.address,
+        state=state,
+        city=city,
         latitude=merchant.latitude,
         longitude=merchant.longitude,
         range_km=merchant.range_km,
@@ -85,6 +114,35 @@ def _to_detail(merchant: Merchant, wallet: Wallet | None) -> MerchantDetail:
         updated_at=merchant.updated_at,
         members=members,
         wallet=WalletSummary.model_validate(wallet) if wallet is not None else None,
+        kyc=MerchantKycDetail(
+            completed=merchant.is_kyc_completed,
+            pan=(
+                PanKycDetail(
+                    masked_pan=f"******{pan.pan_last_four}",
+                    verified_name=pan.verified_name,
+                    category=pan.category,
+                    provider_transaction_id=pan.provider_transaction_id,
+                    verified_at=pan.verified_at,
+                )
+                if pan is not None
+                else None
+            ),
+            gstin=(
+                GstinKycDetail(
+                    gstin=gstin.gstin,
+                    legal_name=gstin.legal_name,
+                    business_nature=gstin.business_nature,
+                    state_name=gstin.state_name,
+                    state_code=gstin.state_code,
+                    registration_status=gstin.registration_status,
+                    registration_start_date=gstin.registration_start_date,
+                    provider_transaction_id=gstin.provider_transaction_id,
+                    verified_at=gstin.verified_at,
+                )
+                if gstin is not None
+                else None
+            ),
+        ),
     )
 
 
@@ -112,6 +170,8 @@ async def list_merchants(
     primary_only: bool = Query(
         default=False, description="Collapse to one row per partner (primary shop)"
     ),
+    state: str | None = Query(default=None, description="Filter by shop state"),
+    city: str | None = Query(default=None, description="Filter by shop city"),
 ) -> ListingEnvelope[MerchantListItem]:
     """Paginated, searchable, filterable merchant directory (R8.1, R8.2, R8.3)."""
     page_obj = await MerchantDirectoryService(db).list_merchants(
@@ -124,9 +184,11 @@ async def list_merchants(
         partner_id=partner_id,
         owner_user_id=owner_user_id,
         primary_only=primary_only,
+        state_filter=state,
+        city_filter=city,
     )
     return ListingEnvelope[MerchantListItem](
-        items=[MerchantListItem.model_validate(m) for m in page_obj.items],
+        items=[_to_list_item(m) for m in page_obj.items],
         page=page_obj.page,
         page_size=page_obj.page_size,
         total=page_obj.total,
@@ -146,8 +208,26 @@ async def get_merchant(
     db: DBSession,
 ) -> MerchantDetail:
     """Single merchant detail incl. members, wallet summary, status (R8.4, R8.7)."""
-    merchant, wallet = await MerchantDirectoryService(db).get_merchant(merchant_id)
-    return _to_detail(merchant, wallet)
+    merchant, wallet, pan, gstin = await MerchantDirectoryService(db).get_merchant(merchant_id)
+    return _to_detail(merchant, wallet, pan, gstin)
+
+
+@router.post(
+    "/merchants/{merchant_id}/shops",
+    response_model=MerchantListItem,
+    status_code=201,
+    dependencies=[Depends(require_permission("stores.manage"))],
+)
+async def create_merchant_shop(
+    merchant_id: uuid.UUID,
+    payload: MerchantShopCreateRequest,
+    db: DBSession,
+    audit: Annotated[AuditContext, Depends(audited("stores.create", "merchant"))],
+) -> MerchantListItem:
+    merchant = await MerchantDirectoryService(db).create_shop(merchant_id, payload)
+    audit.set_target(merchant.id)
+    audit.add_metadata(parent_merchant_id=str(merchant_id), partner_id=merchant.partner_id)
+    return _to_list_item(merchant)
 
 
 @router.post(
