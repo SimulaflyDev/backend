@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 
 import pytest
+from sqlalchemy import select
 
 
 @pytest.mark.asyncio
@@ -79,6 +80,70 @@ async def test_login_wrong_password_returns_401(client):
         json={"email": "bob@example.com", "password": "wrongpassword"},
     )
     assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_forgot_and_reset_password(client, db_session, monkeypatch):
+    from app.models.otp import OTP
+    from app.routers import auth
+
+    send_email = Mock(return_value=True)
+    monkeypatch.setattr(auth, "send_password_reset_email", send_email)
+    email = "reset@example.com"
+    old_password = "password123"
+    new_password = "new-password-456"
+
+    registered = await client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": old_password},
+    )
+    assert registered.status_code == 201, registered.text
+
+    requested = await client.post(
+        "/api/v1/auth/forgot-password",
+        json={"email": email},
+    )
+    assert requested.status_code == 200, requested.text
+    send_email.assert_called_once()
+
+    otp = (
+        await db_session.execute(
+            select(OTP).where(OTP.target == f"password-reset:{email}")
+        )
+    ).scalar_one()
+    reset = await client.post(
+        "/api/v1/auth/reset-password",
+        json={"email": email, "otp": otp.code, "new_password": new_password},
+    )
+    assert reset.status_code == 200, reset.text
+
+    old_login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": old_password},
+    )
+    new_login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": new_password},
+    )
+    assert old_login.status_code == 401
+    assert new_login.status_code == 200, new_login.text
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_does_not_reveal_unknown_email(client, monkeypatch):
+    from app.routers import auth
+
+    send_email = Mock(return_value=True)
+    monkeypatch.setattr(auth, "send_password_reset_email", send_email)
+
+    response = await client.post(
+        "/api/v1/auth/forgot-password",
+        json={"email": "unknown@example.com"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert "If an active account exists" in response.json()["message"]
+    send_email.assert_not_called()
 
 
 @pytest.mark.asyncio

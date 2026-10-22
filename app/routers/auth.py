@@ -16,21 +16,24 @@ from app.core.security import (
 from app.models.user import User
 from app.models.otp import OTP
 from app.schemas.auth import (
+    ForgotPasswordRequest,
     GoogleLoginRequest,
     LoginRequest,
     RefreshRequest,
     RegisterRequest,
+    ResetPasswordRequest,
     TokenPair,
 )
 from app.schemas.user import UserOut
 from app.services.google_auth import GoogleAuthError, verify_id_token
 from app.utils.dependencies import DBSession, CurrentUser
-from app.utils.email import send_otp_email
+from app.utils.email import send_otp_email, send_password_reset_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 EMAIL_OTP_TTL = timedelta(minutes=10)
 EMAIL_OTP_RESEND_COOLDOWN = timedelta(seconds=60)
+PASSWORD_RESET_TARGET_PREFIX = "password-reset:"
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -70,6 +73,45 @@ async def _send_email_verification_otp(email: str, db: DBSession) -> bool:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to send verification email. Please try again.",
+        )
+
+    return True
+
+
+async def _send_password_reset_otp(email: str, db: DBSession) -> bool:
+    """Send at most one password-reset email per address during the cooldown window."""
+    target = f"{PASSWORD_RESET_TARGET_PREFIX}{email}"
+    now = datetime.now(timezone.utc)
+    existing = (
+        await db.execute(
+            select(OTP)
+            .where(OTP.target == target)
+            .order_by(OTP.created_at.desc())
+        )
+    ).scalars().first()
+
+    if (
+        existing is not None
+        and _as_utc(existing.expires_at) > now
+        and _as_utc(existing.created_at) >= now - EMAIL_OTP_RESEND_COOLDOWN
+    ):
+        return False
+
+    await db.execute(delete(OTP).where(OTP.target == target))
+    otp_entry = OTP(
+        target=target,
+        code=f"{secrets.randbelow(900_000) + 100_000}",
+        expires_at=now + EMAIL_OTP_TTL,
+    )
+    db.add(otp_entry)
+    await db.commit()
+
+    if not send_password_reset_email(email, otp_entry.code):
+        await db.execute(delete(OTP).where(OTP.id == otp_entry.id))
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Password reset email could not be sent. Please try again.",
         )
 
     return True
@@ -167,6 +209,59 @@ async def login(body: LoginRequest, db: DBSession) -> TokenPair:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account disabled")
     sub = str(user.id)
     return TokenPair(access_token=create_access_token(sub), refresh_token=create_refresh_token(sub))
+
+
+@router.post("/forgot-password")
+async def forgot_password(body: ForgotPasswordRequest, db: DBSession):
+    """Send a reset OTP without revealing whether an email address is registered."""
+    email = body.email.lower()
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+    if user is not None and user.is_active:
+        await _send_password_reset_otp(email, db)
+
+    return {
+        "message": "If an active account exists for this email, a reset code has been sent."
+    }
+
+
+@router.post("/reset-password")
+async def reset_password(body: ResetPasswordRequest, db: DBSession):
+    email = body.email.lower()
+    target = f"{PASSWORD_RESET_TARGET_PREFIX}{email}"
+    result = await db.execute(
+        select(OTP)
+        .where(OTP.target == target)
+        .order_by(OTP.created_at.desc())
+    )
+    otp_entry = result.scalars().first()
+    now = datetime.now(timezone.utc)
+
+    if otp_entry is None or _as_utc(otp_entry.expires_at) < now:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset code is invalid or expired. Please request a new one.",
+        )
+    if not secrets.compare_digest(otp_entry.code, body.otp):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset code is invalid or expired. Please request a new one.",
+        )
+
+    user_result = await db.execute(select(User).where(User.email == email))
+    user = user_result.scalar_one_or_none()
+    if user is None or not user.is_active:
+        await db.execute(delete(OTP).where(OTP.target == target))
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset code is invalid or expired. Please request a new one.",
+        )
+
+    user.hashed_password = hash_password(body.new_password)
+    await db.execute(delete(OTP).where(OTP.target == target))
+    await db.commit()
+    return {"message": "Password reset successfully. You can now sign in."}
 
 
 @router.post("/refresh", response_model=TokenPair)
