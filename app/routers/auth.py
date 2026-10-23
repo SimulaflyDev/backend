@@ -1,4 +1,5 @@
 import secrets
+from asyncio import to_thread
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, status
@@ -67,7 +68,7 @@ async def _send_email_verification_otp(email: str, db: DBSession) -> bool:
     db.add(otp_entry)
     await db.commit()
 
-    if not send_otp_email(email, otp_entry.code):
+    if not await to_thread(send_otp_email, email, otp_entry.code):
         await db.execute(delete(OTP).where(OTP.id == otp_entry.id))
         await db.commit()
         raise HTTPException(
@@ -106,7 +107,7 @@ async def _send_password_reset_otp(email: str, db: DBSession) -> bool:
     db.add(otp_entry)
     await db.commit()
 
-    if not send_password_reset_email(email, otp_entry.code):
+    if not await to_thread(send_password_reset_email, email, otp_entry.code):
         await db.execute(delete(OTP).where(OTP.id == otp_entry.id))
         await db.commit()
         raise HTTPException(

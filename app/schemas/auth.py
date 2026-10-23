@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class RegisterRequest(BaseModel):
@@ -25,6 +25,13 @@ class ResetPasswordRequest(BaseModel):
     email: EmailStr
     otp: str = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
     new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_fits_bcrypt(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Password must be at most 72 UTF-8 bytes. Use a shorter password.")
+        return value
 
 
 class RefreshRequest(BaseModel):

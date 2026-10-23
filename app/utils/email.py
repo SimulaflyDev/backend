@@ -1,15 +1,63 @@
 import smtplib
+import logging
+import ssl
+from contextlib import contextmanager
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
-SMTP_USER = "no-reply@simulafly.com"
-SMTP_PASSWORD = "lfrk nsgy htog ejsa"  # provided by user
+from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def smtp_connection():
+    settings = get_settings()
+    if not settings.SMTP_USER or not settings.SMTP_PASSWORD:
+        raise ValueError("Configure SMTP_USER and SMTP_PASSWORD in the backend environment")
+    context = ssl.create_default_context()
+    if settings.SMTP_PORT == 465:
+        server = smtplib.SMTP_SSL(
+            settings.SMTP_HOST, settings.SMTP_PORT,
+            timeout=settings.SMTP_TIMEOUT_SECONDS, context=context,
+        )
+    else:
+        server = smtplib.SMTP(
+            settings.SMTP_HOST, settings.SMTP_PORT, timeout=settings.SMTP_TIMEOUT_SECONDS,
+        )
+    with server:
+        server.ehlo()
+        if settings.SMTP_PORT != 465:
+            server.starttls(context=context)
+            server.ehlo()
+        password = settings.SMTP_PASSWORD
+        if settings.SMTP_HOST == "smtp.gmail.com":
+            password = password.replace(" ", "")
+        server.login(settings.SMTP_USER, password)
+        yield server
+
+
+def _send_email(msg: MIMEMultipart) -> bool:
+    stage = "connection/authentication"
+    try:
+        with smtp_connection() as server:
+            stage = "delivery"
+            refused = server.send_message(msg)
+            if refused:
+                logger.error("SMTP delivery refused by server")
+                return False
+        return True
+    except (smtplib.SMTPException, OSError, ValueError) as exc:
+        # Never log email contents, reset codes, or credentials.
+        logger.error(
+            "SMTP %s failed: %s (SMTP status %s). Check backend SMTP configuration and mailbox access.",
+            stage, type(exc).__name__, getattr(exc, "smtp_code", "unavailable"),
+        )
+        return False
 
 def send_otp_email(to_email: str, otp: str):
     msg = MIMEMultipart()
-    msg['From'] = SMTP_USER
+    msg['From'] = get_settings().SMTP_FROM_EMAIL or get_settings().SMTP_USER
     msg['To'] = to_email
     msg['Subject'] = "SimulaFly - Verify Your Business Email"
     
@@ -32,21 +80,12 @@ def send_otp_email(to_email: str, otp: str):
     """
     msg.attach(MIMEText(body, 'html'))
     
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.send_message(msg)
-        print(f"OTP email sent successfully to {to_email}")
-        return True
-    except Exception as e:
-        print(f"Error sending OTP email to {to_email}: {e}")
-        return False
+    return _send_email(msg)
 
 
 def send_password_reset_email(to_email: str, otp: str):
     msg = MIMEMultipart()
-    msg['From'] = SMTP_USER
+    msg['From'] = get_settings().SMTP_FROM_EMAIL or get_settings().SMTP_USER
     msg['To'] = to_email
     msg['Subject'] = "SimulaFly - Reset Your Password"
 
@@ -69,13 +108,4 @@ def send_password_reset_email(to_email: str, otp: str):
     """
     msg.attach(MIMEText(body, 'html'))
 
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.send_message(msg)
-        print(f"Password reset email sent successfully to {to_email}")
-        return True
-    except Exception as e:
-        print(f"Error sending password reset email to {to_email}: {e}")
-        return False
+    return _send_email(msg)

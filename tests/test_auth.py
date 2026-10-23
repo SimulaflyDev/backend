@@ -147,6 +147,42 @@ async def test_forgot_password_does_not_reveal_unknown_email(client, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_reset_email_failure_removes_code_and_allows_retry(client, test_user, db_session, monkeypatch):
+    from app.models.otp import OTP
+    from app.routers import auth
+
+    sender = Mock(side_effect=[False, True])
+    monkeypatch.setattr(auth, "send_password_reset_email", sender)
+    first = await client.post("/api/v1/auth/forgot-password", json={"email": test_user.email})
+    assert first.status_code == 503
+    codes = (await db_session.execute(select(OTP).where(OTP.target == f"password-reset:{test_user.email}"))).scalars().all()
+    assert codes == []
+    second = await client.post("/api/v1/auth/forgot-password", json={"email": test_user.email})
+    assert second.status_code == 200
+    assert sender.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_password_reset_code_is_isolated_expiring_and_single_use(client, test_user, db_session):
+    from datetime import datetime, timedelta, timezone
+    from app.models.otp import OTP
+
+    now = datetime.now(timezone.utc)
+    email_otp = OTP(target=test_user.email, code="123456", expires_at=now + timedelta(minutes=10))
+    reset_otp = OTP(target=f"password-reset:{test_user.email}", code="654321", expires_at=now - timedelta(seconds=1))
+    db_session.add_all([email_otp, reset_otp])
+    await db_session.commit()
+    body = {"email": test_user.email, "otp": "123456", "new_password": "updated-password"}
+    assert (await client.post("/api/v1/auth/reset-password", json=body)).status_code == 400
+    body["otp"] = "654321"
+    assert (await client.post("/api/v1/auth/reset-password", json=body)).status_code == 400
+    reset_otp.expires_at = now + timedelta(minutes=10)
+    await db_session.commit()
+    assert (await client.post("/api/v1/auth/reset-password", json=body)).status_code == 200
+    assert (await client.post("/api/v1/auth/reset-password", json=body)).status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_me_requires_auth(client):
     r = await client.get("/api/v1/users/me")
     assert r.status_code == 403 or r.status_code == 401

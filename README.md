@@ -73,6 +73,25 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 
 ## Environment variables
 
+### Merchant verification and password-reset email
+
+Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, and `SMTP_PASSWORD` in the
+**running API server's environment** (or its `.env`), then restart the API.
+Mail credentials are no longer embedded in Python source. Existing deployments
+must set these values before deploying this update. For Gmail / Google Workspace,
+use a valid app password belonging to the `SMTP_USER` mailbox. Port 587 uses
+STARTTLS; port 465 uses implicit TLS. Both verify the server certificate.
+
+Run `python -m scripts.check_email` from the backend directory on that server to
+test connection and login **without sending email**. A disconnect at login means
+mailbox access or the mail connection still needs attention; a local test does
+not establish connectivity from the deployed host. API logs distinguish
+connection/authentication failures from delivery failures without logging codes
+or passwords. Failed sends remove the reset code so the merchant can retry.
+
+The merchant frontend uses `NEXT_PUBLIC_API_BASE_URL`; if this points to the live
+API, editing local backend files alone does not update the email sender in use.
+
 See `.env.example` for the full list. Notable entries:
 
 | Var | Purpose |

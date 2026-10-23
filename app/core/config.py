@@ -28,6 +28,13 @@ class Settings(BaseSettings):
 
     ALLOWED_ORIGINS: Annotated[List[str], NoDecode] = ["*"]
 
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = Field(default=587, ge=1, le=65535)
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = ""
+    SMTP_TIMEOUT_SECONDS: int = Field(default=15, ge=1, le=60)
+
     # CSV of accepted Google OAuth client IDs (`aud` claim). For an Android
     # app, include both the Android client ID and the Web client ID used as
     # `serverClientId` from the Flutter client.
