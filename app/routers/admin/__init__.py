@@ -21,6 +21,7 @@ from app.routers.admin import (
     dashboard,
     export,
     finance,
+    home_content,
     invoices,
     merchants,
     pricing,
@@ -37,6 +38,7 @@ from app.routers.admin import (
 router = APIRouter()
 
 router.include_router(auth.router)
+router.include_router(home_content.router)
 router.include_router(accounts.router)
 router.include_router(rbac.router)
 router.include_router(users.router)

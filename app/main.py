@@ -14,6 +14,8 @@ from app.core.database import SessionLocal, engine, ping_db, schema_is_current
 from app.core.logging import configure_logging, get_logger
 from app.core.rate_limit import limiter
 from app.routers.admin import router as admin_router
+from app.routers import home_content
+from app.routers import consumer_support
 from app.routers import (
     analytics,
     auth,
@@ -194,6 +196,8 @@ def create_app() -> FastAPI:
     app.include_router(notifications.router, prefix=api_prefix)
     app.include_router(products.router, prefix=api_prefix)
     app.include_router(styles.router, prefix=api_prefix)
+    app.include_router(home_content.router, prefix=api_prefix)
+    app.include_router(consumer_support.router, prefix=api_prefix)
     app.include_router(upload.router, prefix=api_prefix)
     app.include_router(coupons.router, prefix=api_prefix)
     app.include_router(admin_router, prefix=api_prefix)

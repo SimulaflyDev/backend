@@ -154,6 +154,7 @@ async def analyze(
                 user_id=user.id,
                 session_id=session.id,
                 room_bytes=image.data,
+                room_image_id=image.id,
                 style_name=body.style_name,
                 style_vibe=body.style_vibe,
             )
@@ -197,6 +198,7 @@ async def _run_style_makeover(
     user_id: uuid.UUID,
     session_id: uuid.UUID,
     room_bytes: bytes,
+    room_image_id: uuid.UUID,
     style_name: str,
     style_vibe: str | None,
 ) -> None:
@@ -232,6 +234,12 @@ async def _run_style_makeover(
                     "type": "room_preview",
                     "image_id": str(generated.id),
                     "product_id": None,
+                    "source_image_id": str(room_image_id),
+                    "design_summary": {
+                        "room": "Your room",
+                        "style": style_name,
+                        "lighting": "Warm ambient",
+                    },
                     "suggestions": [
                         "Try another design style",
                         "Change the colour palette",
@@ -395,6 +403,7 @@ async def chat(
                 session_id=session.id,
                 prompt=result.image_generation_prompt or body.content,
                 reference_image=attached_image_bytes,
+                reference_image_id=attached_image_id,
             )
         )
 
@@ -416,6 +425,7 @@ async def _run_prompt_image_generation(
     session_id: uuid.UUID,
     prompt: str,
     reference_image: bytes | None = None,
+    reference_image_id: uuid.UUID | None = None,
 ) -> None:
     """Generate an arbitrary image and append it to the same conversation."""
     try:
@@ -446,6 +456,9 @@ async def _run_prompt_image_generation(
                     "type": "room_preview",
                     "image_id": str(generated.id),
                     "product_id": None,
+                    "source_image_id": (
+                        str(reference_image_id) if reference_image_id else None
+                    ),
                     "suggestions": [
                         "Create a different style",
                         "Change a detail in this image",

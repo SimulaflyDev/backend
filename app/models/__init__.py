@@ -11,6 +11,7 @@ from app.models.admin import (
     role_permissions,
     admin_account_roles,
 )
+from app.models.home_content import HomeCarousel, HomeCarouselImage
 from app.models.buyer_intelligence import MerchantBuyerAccess, MerchantContact, MerchantCampaign
 from app.models.cart import CartItem
 from app.models.lead import (
@@ -64,6 +65,7 @@ from app.models.invoice import (
 from app.models.redeem_code import RedeemCode, RedeemCodeStatus
 from app.models.coupon import MerchantCoupon, DiscountType
 from app.models.support import (
+    SupportSettings,
     SupportTicket,
     SupportMessage,
     SupportRequesterType,
@@ -74,6 +76,9 @@ from app.models.support import (
 from app.models.webhook_delivery import WebhookDelivery, WebhookDeliveryStatus
 
 __all__ = [
+    "SupportSettings",
+    "HomeCarousel",
+    "HomeCarouselImage",
     "AdminAccount",
     "Role",
     "Permission",

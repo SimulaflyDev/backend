@@ -170,6 +170,11 @@ async def test_public_merchant_returns_safe_storefront_settings(auth_client, ver
     assert response.status_code == 200, response.text
     body = response.json()
     assert "settings" not in body
+    assert body["is_kyc_completed"] is True
+    assert body["shop_id"] == created.json()["shop_id"]
+    assert body["partner_id"] == created.json()["partner_id"]
+    assert "security" not in body
+    assert "notifications" not in body
     assert body["storefront"] == {
         "tagline": "Live beautifully.",
         "description": "Furniture for thoughtful homes.",

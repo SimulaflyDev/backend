@@ -223,6 +223,17 @@ async def submit_lead(
                 summary=f"A new direct purchase lead has been received for product: {product_title}",
                 payload={"lead_id": str(response.id), "merchant_id": str(merchant_id)},
             ))
+        db.add(Notification(
+            user_id=user.id,
+            kind="delivery",
+            title="Order placed",
+            summary=f"Your order for {product_title} was sent to the shop.",
+            payload={
+                "lead_id": str(response.id),
+                "order_id": str(response.order.id) if response.order else None,
+                "stage": "placed",
+            },
+        ))
         await db.commit()
     except Exception:
         await db.rollback()

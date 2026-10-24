@@ -137,3 +137,46 @@ async def test_admin_delivery_uses_same_completion_and_reward_guard(auth_client,
     assert order.status == "completed"
     assert order.reward_tokens == 10
     assert test_user.credit_balance == 30
+
+
+@pytest.mark.asyncio
+async def test_customer_gets_a_deep_linkable_notification_for_every_step(
+    auth_client, test_user, db_session
+):
+    body, headers, _, _ = await place(
+        auth_client, db_session, test_user, slug="notification-progress-shop"
+    )
+    path = f"/api/v1/merchant/leads/{body['id']}"
+    updates = [
+        {"status": "synced"},
+        {"fulfillment_status": "shipped"},
+        {"fulfillment_status": "out_for_delivery"},
+        {"fulfillment_status": "fulfilled"},
+        {"payment_status": "paid"},
+    ]
+    for update_payload in updates:
+        response = await auth_client.patch(path, headers=headers, json=update_payload)
+        assert response.status_code == 200, response.text
+
+    notifications = (
+        await db_session.execute(
+            select(Notification).where(
+                Notification.user_id == test_user.id,
+                Notification.kind == "delivery",
+            )
+        )
+    ).scalars().all()
+    titles = {notification.title for notification in notifications}
+    assert {
+        "Order placed",
+        "Order accepted",
+        "Order shipped",
+        "Out for delivery",
+        "Order delivered",
+        "Payment complete",
+        "Order complete · +10 tokens",
+    }.issubset(titles)
+    assert all(
+        notification.payload.get("lead_id") == body["id"]
+        for notification in notifications
+    )

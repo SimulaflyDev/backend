@@ -129,7 +129,7 @@ class SupportService:
             requester_type=SupportRequesterType.CONSUMER.value,
         )
 
-    async def get_ticket(self, ticket_id: uuid.UUID) -> SupportTicket:
+    async def get_ticket(self, ticket_id: uuid.UUID, *, lock: bool = False) -> SupportTicket:
         """Fetch a single non-deleted ticket with its message history loaded.
 
         The ``messages`` relationship is eager-loaded (ordered by creation time)
@@ -140,7 +140,10 @@ class SupportService:
             select(SupportTicket)
             .options(selectinload(SupportTicket.messages))
             .where(SupportTicket.id == ticket_id, SupportTicket.deleted_at.is_(None))
+            .execution_options(populate_existing=True)
         )
+        if lock:
+            stmt = stmt.with_for_update()
         ticket = (await self.db.execute(stmt)).scalar_one_or_none()
         if ticket is None:
             raise HTTPException(
@@ -155,6 +158,7 @@ class SupportService:
         *,
         author_id: uuid.UUID,
         body: str,
+        client_message_id: str | None = None,
     ) -> SupportTicket:
         """Append exactly one admin message to the ticket history (R17.4).
 
@@ -162,42 +166,28 @@ class SupportService:
         returns the reloaded ticket with its full (now +1) history. A missing
         ticket raises HTTP 404 (R17.8).
         """
-        ticket = await self.get_ticket(ticket_id)
+        ticket = await self.get_ticket(ticket_id, lock=True)
+        if client_message_id is not None:
+            existing = await self.db.scalar(select(SupportMessage).where(
+                SupportMessage.ticket_id == ticket.id,
+                SupportMessage.client_message_id == client_message_id,
+            ))
+            if existing is not None:
+                if existing.body != body or existing.author_id != author_id or existing.author_type != "admin":
+                    raise HTTPException(409, "Message request ID has already been used")
+                return ticket
         message = SupportMessage(
             ticket_id=ticket.id,
             author_type=SupportMessageAuthorType.ADMIN.value,
             author_id=author_id,
             body=body,
+            client_message_id=client_message_id,
         )
         self.db.add(message)
-
-        # Notify merchant members if it's a merchant ticket
-        if ticket.requester_type == SupportRequesterType.MERCHANT.value:
-            try:
-                from app.models.merchant import MerchantMember
-                from app.models.notification import Notification
-
-                # Find members of this merchant
-                members_res = await self.db.execute(
-                    select(MerchantMember).where(MerchantMember.merchant_id == ticket.requester_id)
-                )
-                merchant_members = members_res.scalars().all()
-
-                for member in merchant_members:
-                    notif = Notification(
-                        user_id=member.user_id,
-                        kind="system",
-                        title="Support Ticket Updated",
-                        summary=f"Admin replied to your support ticket: '{ticket.subject}'",
-                        payload={"ticket_id": str(ticket.id)}
-                    )
-                    self.db.add(notif)
-            except Exception as e:
-                import logging
-                logger = logging.getLogger("app.services.admin.support_service")
-                logger.warning(f"Failed to create merchant support reply notification: {e}")
-
-        await self.db.commit()
+        ticket.updated_at = _now()
+        ticket.status = SupportTicketStatus.PENDING.value
+        await self._notify(ticket, "Support replied", f"New reply to #{ticket.reference}: {ticket.subject}")
+        await self.db.flush()
         # Reload the ticket with the appended message included in history.
         return await self.get_ticket(ticket_id)
 
@@ -210,7 +200,27 @@ class SupportService:
 
         A missing ticket raises HTTP 404 (R17.8).
         """
-        ticket = await self.get_ticket(ticket_id)
+        ticket = await self.get_ticket(ticket_id, lock=True)
+        if ticket.status == new_status.value:
+            return ticket
         ticket.status = new_status.value
-        await self.db.commit()
+        ticket.updated_at = _now()
+        await self._notify(ticket, "Support request updated", f"Request #{ticket.reference} is now {ticket.status}.")
+        await self.db.flush()
         return await self.get_ticket(ticket_id)
+
+    async def _notify(self, ticket: SupportTicket, title: str, summary: str) -> None:
+        from app.models.merchant import MerchantMember
+        from app.models.notification import Notification
+        from app.models.user import User
+
+        if ticket.requester_type == SupportRequesterType.CONSUMER.value:
+            recipients = [ticket.requester_id] if await self.db.get(User, ticket.requester_id) else []
+        else:
+            recipients = list((await self.db.scalars(select(MerchantMember.user_id).where(
+                MerchantMember.merchant_id == ticket.requester_id,
+            ))).all())
+        for user_id in set(recipients):
+            self.db.add(Notification(user_id=user_id, kind="system", title=title, summary=summary,
+                payload={"ticket_id": str(ticket.id), "requester_type": ticket.requester_type,
+                         "support_status": ticket.status}))

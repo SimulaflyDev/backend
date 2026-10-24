@@ -53,7 +53,7 @@ async def apply_order_update(
         lead.status = "lost"
         db.add(Notification(user_id=lead.user_id, kind="delivery", title="Order cancelled",
             summary="The merchant cancelled your order. Contact the shop if payment was already made.",
-            payload={"lead_id": str(lead.id), "order_id": str(order.id)}))
+            payload={"lead_id": str(lead.id), "order_id": str(order.id), "stage": "cancelled"}))
         return
 
     if lead_status == "new" and order.status != "pending_merchant_contact":
@@ -67,6 +67,7 @@ async def apply_order_update(
 
     now = datetime.now(timezone.utc)
     before = (order.status, order.fulfillment_status, order.payment_status)
+    was_accepted = order.accepted_at is not None
     advancing = lead_status in {"synced", "converted"} or payment_status or fulfillment_status not in {None, "pending"}
     if advancing and order.accepted_at is None:
         order.accepted_at = now
@@ -84,6 +85,57 @@ async def apply_order_update(
     if payment_status == "paid" or lead_status == "converted":
         order.payment_status = "paid"
         order.payment_completed_at = order.payment_completed_at or now
+
+    def notify(title: str, summary: str, stage: str) -> None:
+        db.add(Notification(
+            user_id=lead.user_id,
+            kind="delivery",
+            title=title,
+            summary=summary,
+            payload={
+                "lead_id": str(lead.id),
+                "order_id": str(order.id),
+                "stage": stage,
+            },
+        ))
+
+    # Persist a precise inbox event for every visible customer milestone. If a
+    # merchant jumps several stages in one update, the customer still receives
+    # the missing milestones in their correct order instead of one vague event.
+    if not was_accepted and order.accepted_at is not None:
+        notify(
+            "Order accepted",
+            "The shop accepted your order and is preparing it.",
+            "accepted",
+        )
+
+    before_stage = STAGES.index(before[1])
+    after_stage = STAGES.index(order.fulfillment_status)
+    visible_stages = {
+        "shipped": (
+            "Order shipped",
+            "Your order has left the shop and is on its way.",
+        ),
+        "out_for_delivery": (
+            "Out for delivery",
+            "Your order is out for delivery.",
+        ),
+        "fulfilled": (
+            "Order delivered",
+            "The shop marked your order as delivered.",
+        ),
+    }
+    for stage in STAGES[before_stage + 1:after_stage + 1]:
+        if stage in visible_stages:
+            title, summary = visible_stages[stage]
+            notify(title, summary, stage)
+
+    if before[2] != "paid" and order.payment_status == "paid":
+        notify(
+            "Payment complete",
+            "The shop confirmed that payment for your order is complete.",
+            "payment_complete",
+        )
 
     if order.fulfillment_status == "fulfilled" and order.payment_status == "paid":
         order.status = "completed"
@@ -103,9 +155,4 @@ async def apply_order_update(
             ))
             db.add(Notification(user_id=lead.user_id, kind="delivery", title="Order complete · +10 tokens",
                 summary="Delivery and payment are complete. 10 tokens have been added to your balance.",
-                payload={"lead_id": str(lead.id), "order_id": str(order.id), "reward_tokens": 10}))
-    elif before != (order.status, order.fulfillment_status, order.payment_status):
-        label = "Delivered — awaiting payment confirmation" if order.fulfillment_status == "fulfilled" else order.fulfillment_status.replace("_", " ").title()
-        db.add(Notification(user_id=lead.user_id, kind="delivery", title="Order progress updated",
-            summary=f"{label}. Payment: {order.payment_status}.",
-            payload={"lead_id": str(lead.id), "order_id": str(order.id)}))
+                payload={"lead_id": str(lead.id), "order_id": str(order.id), "stage": "completed", "reward_tokens": 10}))

@@ -39,7 +39,9 @@ class ProductCarouselPayload(BaseModel):
 class RoomPreviewPayload(BaseModel):
     type: Literal["room_preview"] = "room_preview"
     image_id: uuid.UUID
-    product_id: uuid.UUID
+    product_id: uuid.UUID | None = None
+    source_image_id: uuid.UUID | None = None
+    design_summary: dict[str, Any] | None = None
 
 
 UIPayload = ProductCarouselPayload | RoomPreviewPayload

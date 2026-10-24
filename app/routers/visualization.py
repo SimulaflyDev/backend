@@ -525,6 +525,7 @@ async def _persist_and_mark_done(
     product_id: uuid.UUID | None,
 ) -> None:
     async with SessionLocal() as db:
+        job = await db.get(VisualizeJob, job_id)
         generated = await persist_image(
             db,
             owner_id=user_id,
@@ -540,6 +541,9 @@ async def _persist_and_mark_done(
                 "type": "room_preview",
                 "image_id": str(generated.id),
                 "product_id": str(product_id) if product_id else None,
+                "source_image_id": (
+                    str(job.room_image_id) if job and job.room_image_id else None
+                ),
                 "suggestions": [
                     "Try a different placement",
                     "Show me similar options",

@@ -26,6 +26,9 @@ class SessionOut(BaseModel):
     title: str
     status: str
     room_image_id: uuid.UUID | None
+    # Frozen design context for this room (including the selected style). The
+    # mobile chat uses this to rebuild its room header/summary after restart.
+    profile_snapshot: dict
     context_summary: str | None
     created_at: datetime
     updated_at: datetime

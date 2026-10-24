@@ -45,6 +45,8 @@ log = logging.getLogger(__name__)
 # The wildcard ``*`` (Super Admin) is seeded separately so it is never handed
 # to a non-Super-Admin role by mistake.
 PERMISSION_CATALOG: dict[str, str] = {
+    "content.read": "View app home carousel content.",
+    "content.manage": "Edit and publish app home carousel content and images.",
     "dashboard.read": "View the executive dashboard KPIs and series.",
     "alerts.read": "View operational alert counters and underlying items.",
     "alerts.resolve": "Resolve operational alert items.",
@@ -103,6 +105,8 @@ _SUPPORT_PERMISSIONS = [
 ]
 
 _ORG_MANAGER_PERMISSIONS = [
+    "content.read",
+    "content.manage",
     # Broad read across the operational surface...
     "dashboard.read",
     "alerts.read",

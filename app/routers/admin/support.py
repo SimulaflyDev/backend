@@ -13,8 +13,8 @@ step):
 
 Reads are gated by ``require_permission("support.read")`` and the respond /
 status-change actions by ``require_permission("support.respond")``. The mutating
-routes are wrapped with ``audited(...)`` so each action writes one immutable
-audit entry (R17.4, R17.5 / R19.1).
+routes commit the action and its immutable audit entry in the same transaction
+(R17.4, R17.5 / R19.1).
 
 SLA breach is a derived classification surfaced as ``sla_breached`` on every
 ticket (``status != 'resolved' AND sla_due_at < now``, R17.6); see
@@ -48,7 +48,9 @@ from app.schemas.admin.support import (
     SupportTicketListResponse,
     SupportTicketStatusUpdateRequest,
 )
-from app.services.admin.audit_service import AuditContext, audited
+from app.services.admin.audit_service import AuditService
+from app.schemas.consumer_support import HelpSettings
+from app.services.support_settings import get_help_settings, save_help_settings
 from app.services.admin.listing import ListParams
 from app.services.admin.support_service import SupportService, is_sla_breached
 from app.utils.admin_dependencies import require_permission
@@ -85,6 +87,9 @@ def _to_detail(ticket: SupportTicket) -> SupportTicketDetail:
         sla_due_at=ticket.sla_due_at,
         created_at=ticket.created_at,
         updated_at=ticket.updated_at,
+        reason=ticket.reason,
+        lead_id=ticket.lead_id,
+        session_id=ticket.session_id,
         sla_breached=is_sla_breached(ticket),
         messages=[SupportMessageOut.model_validate(m) for m in ticket.messages],
     )
@@ -187,32 +192,49 @@ async def respond_to_ticket(
     payload: SupportMessageCreateRequest,
     db: DBSession,
     admin: Annotated[AdminAccount, Depends(require_permission("support.respond"))],
-    audit: Annotated[AuditContext, Depends(audited("support.respond", "support_ticket"))],
 ) -> SupportTicketDetail:
     """Append the admin's response to the ticket history and record it (R17.4)."""
     ticket = await SupportService(db).respond(
         ticket_id,
         author_id=admin.id,
         body=payload.body,
+        client_message_id=payload.client_message_id,
     )
-    audit.set_target(ticket_id)
-    audit.add_metadata(message_count=len(ticket.messages))
+    await AuditService(db).record(actor=admin, action="support.respond", target_type="support_ticket",
+        target_id=ticket_id, metadata={"message_count": len(ticket.messages)})
+    await db.commit()
     return _to_detail(ticket)
 
 
 @router.patch(
     "/support/tickets/{ticket_id}/status",
     response_model=SupportTicketDetail,
-    dependencies=[Depends(require_permission("support.respond"))],
 )
 async def update_ticket_status(
     ticket_id: uuid.UUID,
     payload: SupportTicketStatusUpdateRequest,
     db: DBSession,
-    audit: Annotated[AuditContext, Depends(audited("support.status", "support_ticket"))],
+    admin: Annotated[AdminAccount, Depends(require_permission("support.respond"))],
 ) -> SupportTicketDetail:
     """Persist a new ticket status and record the action (R17.5)."""
     ticket = await SupportService(db).change_status(ticket_id, payload.status)
-    audit.set_target(ticket_id)
-    audit.add_metadata(status=ticket.status)
+    await AuditService(db).record(actor=admin, action="support.status", target_type="support_ticket",
+        target_id=ticket_id, metadata={"status": ticket.status})
+    await db.commit()
     return _to_detail(ticket)
+
+
+@router.get("/support/settings", response_model=HelpSettings,
+    dependencies=[Depends(require_permission("content.read"))])
+async def read_settings(db: DBSession):
+    return await get_help_settings(db)
+
+
+@router.put("/support/settings", response_model=HelpSettings)
+async def update_settings(body: HelpSettings, db: DBSession,
+    admin: Annotated[AdminAccount, Depends(require_permission("content.manage"))]):
+    result = await save_help_settings(db, body)
+    await AuditService(db).record(actor=admin, action="support.settings.update", target_type="support_settings",
+        target_id=1, metadata={"version": result.version})
+    await db.commit()
+    return result

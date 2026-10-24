@@ -28,7 +28,6 @@ class SupportMessageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    reference: str
     ticket_id: uuid.UUID
     author_type: str
     author_id: uuid.UUID
@@ -49,6 +48,7 @@ class SupportTicketListItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    reference: str
     subject: str
     requester_type: str
     requester_id: uuid.UUID
@@ -63,6 +63,9 @@ class SupportTicketDetail(SupportTicketListItem):
     """Detail record for a single ticket including its message history (R17.3)."""
 
     updated_at: datetime
+    reason: str | None = None
+    lead_id: uuid.UUID | None = None
+    session_id: uuid.UUID | None = None
     messages: list[SupportMessageOut] = Field(default_factory=list)
 
 
@@ -77,7 +80,9 @@ class SupportMessageCreateRequest(BaseModel):
     HTTP 422.
     """
 
-    body: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    body: str = Field(min_length=1, max_length=4000)
+    client_message_id: str | None = Field(default=None, min_length=16, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
 
 
 class SupportTicketStatusUpdateRequest(BaseModel):

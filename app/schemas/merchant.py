@@ -124,6 +124,9 @@ class MerchantPublicOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    partner_id: str | None = None
+    shop_id: str | None = None
+    is_kyc_completed: bool = False
     slug: str
     legal_name: str
     display_name: str
